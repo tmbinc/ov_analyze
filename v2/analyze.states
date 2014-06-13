@@ -1,0 +1,315 @@
+TRANSACTION PACKET,TIMESTAMP
+  Initial
+    if type == "PACKET"
+    if token == "SETUP"
+    fork
+    mark
+    capture token token
+    capture address address
+    capture endpoint endpoint
+    next Setup
+
+  Initial
+    if type == "PACKET"
+    if token == "IN" "OUT"
+    fork
+    mark
+    capture token token
+    capture address address
+    capture endpoint endpoint
+    next InOut
+
+  Initial
+    if type == "TIMESTAMP"
+    capture timestamp_first timestamp
+
+  Initial
+    if type == "PACKET"
+    if token == "PING"
+    fork
+    mark
+    capture token token
+    capture address address
+    capture endpoint endpoint
+    next WaitPing
+
+  Initial
+    complain
+    next Initial
+
+  InOut
+    if type == "PACKET"
+    if token == "DATA0" "DATA1"
+    capture token_data token
+    capture data data
+    mark
+    next WaitAck
+
+  InOut
+    if type == "PACKET"
+    if token == "STALL" "NAK" "NYET"
+    capture token_result token
+    mark
+    emit
+
+  InOut
+    if type == "TIMESTAMP"
+    capture timestamp_last timestamp
+
+  Setup
+    if type == "PACKET"
+    if token == "DATA0"
+    capture data data
+    mark
+    next WaitAck
+
+  Setup
+    if type == "TIMESTAMP"
+    capture timestamp_last timestamp
+
+  WaitAck
+    if type == "PACKET"
+    if token == "ACK" "NAK" "NYET"
+    capture token_result token
+    mark
+    emit
+
+  WaitAck
+    if type == "TIMESTAMP"
+    capture timestamp_last timestamp
+
+  WaitPing
+    if type == "PACKET"
+    if token == "ACK" "NAK" "STALL"
+    capture token_result token
+    mark
+    emit
+
+  WaitPing
+    if type == "TIMESTAMP"
+    capture timestamp_last timestamp
+
+#
+# Transfer Properties:
+#
+# token = SETUP/IN/OUT
+# address
+# endpoint
+# token_data (for SETUP only)
+# data_setup (for SETUP only)
+# data
+#
+
+TRANSFER TRANSACTION,TIMESTAMP
+  # SETUP?
+  Initial
+    if type == "TRANSACTION"
+    if token == "SETUP"
+    fork
+    mark
+    capture data_setup data
+    capture address address
+    capture endpoint endpoint
+    capture token token
+    next Setup_First_Data
+
+  # IN/OUT?
+  Initial
+    if type == "TRANSACTION"
+    if token == "IN" "OUT"
+    if token_result == "ACK"
+    if data != ""
+    fork
+    capture address address
+    capture endpoint endpoint
+    capture data data
+    capture token token
+    mark
+    next MoreData
+
+  # IN/OUT with NAK
+  Initial
+    if type == "TRANSACTION"
+    if token == "IN" "OUT"
+    if token_result == "NAK"
+    fork
+    capture address address
+    capture endpoint endpoint
+    capture token token
+    capture token_result token_result
+    mark
+    next MoreNak
+
+  Initial
+    if type == "TRANSACTION"
+    if token == "IN" "OUT"
+    if data == ""
+    fork
+    capture address address
+    capture endpoint endpoint
+    capture data data
+    capture token token
+    capture token_result token_result
+    mark
+    emit
+
+  # capture first timestamp
+  Initial
+    if type == "TIMESTAMP"
+    capture timestamp_first timestamp
+
+  # ignore PING
+  Initial
+    if type == "TRANSACTION"
+    if token == "PING"
+
+  Initial
+    complain
+
+  # SETUP -> IN/OUT w. ACK
+  Setup_First_Data
+    if type == "TRANSACTION"
+    if address == address
+    if endpoint == endpoint
+    if token == "IN" "OUT"
+    if token_result == "ACK"
+    if data != ""
+    capture data data
+    capture token_data token
+    mark
+    next Setup_More_First_Data
+
+  # SETUP -> IN/OUT w. ACK but zero data
+  Setup_First_Data
+    if type == "TRANSACTION"
+    if address == address
+    if endpoint == endpoint
+    if token == "IN" "OUT"
+    if token_result == "ACK"
+    capture data data
+    capture token_data token
+    capture token_result token_result
+    mark
+    emit
+
+  # SETUP -> IN/OUT w. NAK/NYET (stay in state)
+  Setup_First_Data
+    if type == "TRANSACTION"
+    if address == address
+    if endpoint == endpoint
+    if token == "IN" "OUT"
+    if token_result == "NAK" "NYET"
+    capture data
+    capture token_data
+    mark
+
+  # SETUP -> IN/OUT w. STALL
+  Setup_First_Data
+    if type == "TRANSACTION"
+    if address == address
+    if endpoint == endpoint
+    if token == "IN" "OUT"
+    if token_result == "STALL"
+    capture token_result token_result
+    mark
+    emit
+
+  # if data from another address/endpoint ignore
+  Setup_First_Data
+    if type == "TRANSACTION"
+
+  Setup_First_Data
+    if type == "TIMESTAMP"
+
+  # SETUP -> IN/OUT -> ACK -> IN/OUT -> ACK, more data, append and stay in state
+  Setup_More_First_Data
+    if type == "TRANSACTION"
+    if address == address
+    if endpoint == endpoint
+    if token_result == "ACK"
+    if token == token_data
+    if data != ""
+    append data data
+    mark
+
+  # NAK'ed transaction
+  Setup_More_First_Data
+    if type == "TRANSACTION"
+    if address == address
+    if endpoint == endpoint
+    if token == token_data
+    if token_result == "NAK" "NYET"
+    mark
+
+  # transaction to same address/endpoint but different token must be zero data and ends setup
+  Setup_More_First_Data
+    if type == "TRANSACTION"
+    if address == address
+    if endpoint == endpoint
+    if data == ""
+    capture token_result token_result
+    mark
+    emit
+
+  # transaction of different type to same address/endpoint but different token with data is illegal
+  Setup_More_First_Data
+    if type == "TRANSACTION"
+    if address == address
+    if endpoint == endpoint
+    complain
+
+  # if data from another address/endpoint ignore
+  Setup_More_First_Data
+    if type == "TRANSACTION"
+
+  Setup_More_First_Data
+    if type == "TIMESTAMP"
+
+  MoreData
+    if type == "TRANSACTION"
+    if address == address
+    if endpoint == endpoint
+    if token_result == "ACK"
+    if token == token
+    if data != ""
+    append data data
+    mark
+
+  # NAK'ed transaction, emit (and don't mark; another NAK transfer will be added)
+  MoreData
+    if type == "TRANSACTION"
+    if address == address
+    if endpoint == endpoint
+    if token_result == "NAK" "NYET"
+    emit
+
+  # transaction to same address/endpoint but different token created a new transfer
+  MoreData
+    if type == "TRANSACTION"
+    if address == address
+    if endpoint == endpoint
+    emit
+
+  # if data from another address/endpoint creates a new transfer
+  MoreData
+    if type == "TRANSACTION"
+    emit
+
+  MoreData
+    if type == "TIMESTAMP"
+
+  MoreNak
+    if type == "TRANSACTION"
+    if address == address
+    if endpoint == endpoint
+    if token_result == "NAK" "NYET"
+    mark
+
+  MoreNak
+    if type == "TRANSACTION"
+    if address == address
+    if endpoint == endpoint
+    emit
+
+  MoreNak
+    if type == "TIMESTAMP"
