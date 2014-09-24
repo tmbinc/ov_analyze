@@ -69,7 +69,7 @@ TRANSACTION PACKET,TIMESTAMP
 
   WaitAck
     if type == "PACKET"
-    if token == "ACK" "NAK" "NYET"
+    if token == "ACK" "NAK" "NYET" "STALL"
     capture token_result token
     mark
     emit
@@ -309,6 +309,11 @@ TRANSFER TRANSACTION,TIMESTAMP
     if type == "TRANSACTION"
     if address == address
     if endpoint == endpoint
+    emit
+
+  # if data from another address/endpoint creates a new transfer
+  MoreNak
+    if type == "TRANSACTION"
     emit
 
   MoreNak

@@ -1,13 +1,14 @@
-import sys, struct, copy
+import sys, struct, copy, os
 
 class Element:
   id = 0
 
-  def __init__(self, type, **content):
+  def __init__(self, type, claims = "", **content):
     self.type = type
     self.id = Element.id
     Element.id += 1
     self.claimed = False
+    self.claims = claims
     self.claimed_by = []
     self.__dict__.update(content)
     self.content = content
@@ -74,6 +75,8 @@ def parse(fn):
       yield Packet("PING", **parse_endpoint(r[7:]))
     elif token == "NYET":
       yield Packet("NYET")
+    elif token == "STALL":
+      yield Packet("STALL")
     else:
       assert False, token
 
@@ -207,7 +210,7 @@ class StateMachine:
           self.trace("NEXT %s" % self.current_state)
         elif opcode == self.OPCODE_EMIT:
           self.trace("EMIT", self)
-          res_elements.append(Element(self.name, **self.result))
+          res_elements.append(Element(self.name, claims = self.claimed, **self.result))
           match = False
         elif opcode == self.OPCODE_COMPLAIN:
           assert False, "complain"
@@ -220,8 +223,8 @@ class StateMachine:
       assert not len(res_elements)
       res_state_machines.append(self)
     else:
-      assert len(res_elements), "state machine fell through without emitting"
-      print("KILL:", self, res_state_machines)
+      assert len(res_elements), "state machine fell through without emitting from %s (%s < %s)" % (self.current_state, element, self.result)
+      #print("KILL:", self, res_state_machines)
     
     return res_state_machines[::-1], res_elements
 
@@ -233,7 +236,7 @@ active_state_machines = []
 current_state_machine = None
 
 def read_states():
-  for l in open("analyze.states"):
+  for l in open(os.path.join(os.path.dirname(os.path.realpath(__file__)), "analyze.states")):
     l = l[:-1]
     
     if not l.strip():
@@ -274,11 +277,17 @@ read_states()
     
 print(active_state_machines)
     
+def dump(e, id = 0):
+  print("--" * id + " %r" % e)
+  for y in e.claims:
+    dump(y, id + 1)
+
+
 try:
   while True:
     e = active_elements.pop(0) if len(active_elements) else next(parser)
     
-    print("********** EUT: %r" % e)
+#    print("********** EUT: %r" % e)
 #    print(">>>>>>>>>> active state machines")
 #    for sm in active_state_machines:
 #      print("  ",sm)
@@ -295,6 +304,8 @@ try:
 #      if res_elements:
 #        print("emitted: %r" % active_elements)
       new_state_machines += res_state_machines
+    if not e.claimed and not e.type == "TIMESTAMP":
+      dump(e)
       
 
     active_state_machines = new_state_machines
