@@ -4,6 +4,7 @@ TRANSACTION PACKET,TIMESTAMP
     if token == "SETUP"
     fork
     mark
+    set seen_upstream 0
     capture token token
     capture address address
     capture endpoint endpoint
@@ -14,6 +15,7 @@ TRANSACTION PACKET,TIMESTAMP
     if token == "IN" "OUT"
     fork
     mark
+    set seen_upstream 0
     capture token token
     capture address address
     capture endpoint endpoint
@@ -33,28 +35,50 @@ TRANSACTION PACKET,TIMESTAMP
     capture endpoint endpoint
     next WaitPing
 
+  # stray packets...
   Initial
-    complain
-    next Initial
+    fork
+    mark
+    capture token token
+    set seen_upstream 0
+    emit
 
   InOut
     if type == "PACKET"
     if token == "DATA0" "DATA1"
     capture token_data token
     capture data data
+    set seen_upstream 1
     mark
     next WaitAck
 
   InOut
     if type == "PACKET"
     if token == "STALL" "NAK" "NYET"
+    # well, we _would_ have seen the data (maybe)
+    set seen_upstream 1
     capture token_result token
+    mark
+    emit
+
+  # if we don't see upstream data, we only see IN -> ACK
+  InOut
+    if type == "PACKET"
+    if token == "ACK"
+    capture token_result token
+    capture data
     mark
     emit
 
   InOut
     if type == "TIMESTAMP"
     capture timestamp_last timestamp
+
+  # if we don't see upstream data, we only see OUT (or whatever) and then something else that comes from the host.
+  InOut
+    if type == "PACKET"
+    capture token_result
+    emit
 
   Setup
     if type == "PACKET"
@@ -69,7 +93,8 @@ TRANSACTION PACKET,TIMESTAMP
 
   WaitAck
     if type == "PACKET"
-    if token == "ACK" "NAK" "NYET" "STALL"
+    if token == "ACK" "NAK" "NYET"
+    set seen_upstream 1
     capture token_result token
     mark
     emit
@@ -78,9 +103,16 @@ TRANSACTION PACKET,TIMESTAMP
     if type == "TIMESTAMP"
     capture timestamp_last timestamp
 
+  # if we're waiting for ACK/NAK/NYET but saw somehting else, we likely just missed the upstream token; abort
+  WaitAck
+    if type == "PACKET"
+    set seen_upstream 0
+    emit
+
   WaitPing
     if type == "PACKET"
     if token == "ACK" "NAK" "STALL"
+    set seen_upstream 1
     capture token_result token
     mark
     emit
@@ -101,6 +133,11 @@ TRANSACTION PACKET,TIMESTAMP
 #
 
 TRANSFER TRANSACTION,TIMESTAMP
+  Initial
+    if type == "TRANSACTION"
+    if seen_upstream == "0"
+    mark
+
   # SETUP?
   Initial
     if type == "TRANSACTION"
@@ -111,6 +148,7 @@ TRANSFER TRANSACTION,TIMESTAMP
     capture address address
     capture endpoint endpoint
     capture token token
+    set data
     next Setup_First_Data
 
   # IN/OUT?
@@ -124,8 +162,12 @@ TRANSFER TRANSACTION,TIMESTAMP
     capture endpoint endpoint
     capture data data
     capture token token
+    capture token_result token_result
     mark
-    next MoreData
+
+    # conditional: if interrupt, or if bulk with non-max sized data
+    emit
+    #next MoreData
 
   # IN/OUT with NAK
   Initial
@@ -137,8 +179,9 @@ TRANSFER TRANSACTION,TIMESTAMP
     capture endpoint endpoint
     capture token token
     capture token_result token_result
+    capture data
     mark
-    next MoreNak
+    next MoreData
 
   Initial
     if type == "TRANSACTION"
@@ -162,9 +205,6 @@ TRANSFER TRANSACTION,TIMESTAMP
   Initial
     if type == "TRANSACTION"
     if token == "PING"
-
-  Initial
-    complain
 
   # SETUP -> IN/OUT w. ACK
   Setup_First_Data
@@ -203,6 +243,16 @@ TRANSFER TRANSACTION,TIMESTAMP
     capture token_data
     mark
 
+  # SETUP -> IN/OUT w. NAK/NYET -> PING (stay in state)
+  Setup_First_Data
+    if type == "TRANSACTION"
+    if address == address
+    if endpoint == endpoint
+    if token == "PING"
+    capture data
+    capture token_data
+    mark
+
   # SETUP -> IN/OUT w. STALL
   Setup_First_Data
     if type == "TRANSACTION"
@@ -211,7 +261,15 @@ TRANSFER TRANSACTION,TIMESTAMP
     if token == "IN" "OUT"
     if token_result == "STALL"
     capture token_result token_result
+    capture token_data token
     mark
+    emit
+
+  # other tokens to the same endpoints abort this transfer
+  Setup_First_Data
+    if type == "TRANSACTION"
+    if address == address
+    if endpoint == endpoint
     emit
 
   # if data from another address/endpoint ignore
@@ -228,7 +286,7 @@ TRANSFER TRANSACTION,TIMESTAMP
     if endpoint == endpoint
     if token_result == "ACK"
     if token == token_data
-    if data != ""
+# FIXME, we need a "second_data" phase    if data != ""
     append data data
     mark
 
@@ -241,12 +299,33 @@ TRANSFER TRANSACTION,TIMESTAMP
     if token_result == "NAK" "NYET"
     mark
 
+  Setup_More_First_Data
+    if type == "TRANSACTION"
+    if address == address
+    if endpoint == endpoint
+    if token == "PING"
+    mark
+
+  # the opposite setup transaction may NAK as well, but NYET mysteriously makes the transfer finish.
+  Setup_More_First_Data
+    if type == "TRANSACTION"
+    if address == address
+    if endpoint == endpoint
+    if token == "IN" "OUT"
+    if token != token_data
+    if token_result == "NAK"
+    mark
+
   # transaction to same address/endpoint but different token must be zero data and ends setup
+  # for some reason, NYET is also acceptable.
   Setup_More_First_Data
     if type == "TRANSACTION"
     if address == address
     if endpoint == endpoint
     if data == ""
+    if token == "IN" "OUT"
+    if token != token_data
+    if token_result == "ACK" "NYET"
     capture token_result token_result
     mark
     emit
@@ -273,15 +352,31 @@ TRANSFER TRANSACTION,TIMESTAMP
     if token == token
     if data != ""
     append data data
+    capture token_result token_result
     mark
+    # conditional: if interrupt, or if bulk with non-max sized data
+    emit
 
-  # NAK'ed transaction, emit (and don't mark; another NAK transfer will be added)
+  # ACK'ed transaction with zero data ends transfer
+  MoreData
+    if type == "TRANSACTION"
+    if address == address
+    if endpoint == endpoint
+    if token_result == "ACK"
+    if token == token
+    if data == ""
+    capture token_result token_result
+    mark
+    emit
+
+  # NAK'ed, wait
   MoreData
     if type == "TRANSACTION"
     if address == address
     if endpoint == endpoint
     if token_result == "NAK" "NYET"
-    emit
+    capture token_result token_result
+    mark
 
   # transaction to same address/endpoint but different token created a new transfer
   MoreData
@@ -290,31 +385,8 @@ TRANSFER TRANSACTION,TIMESTAMP
     if endpoint == endpoint
     emit
 
-  # if data from another address/endpoint creates a new transfer
   MoreData
     if type == "TRANSACTION"
-    emit
 
   MoreData
-    if type == "TIMESTAMP"
-
-  MoreNak
-    if type == "TRANSACTION"
-    if address == address
-    if endpoint == endpoint
-    if token_result == "NAK" "NYET"
-    mark
-
-  MoreNak
-    if type == "TRANSACTION"
-    if address == address
-    if endpoint == endpoint
-    emit
-
-  # if data from another address/endpoint creates a new transfer
-  MoreNak
-    if type == "TRANSACTION"
-    emit
-
-  MoreNak
     if type == "TIMESTAMP"
